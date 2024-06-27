@@ -1,0 +1,206 @@
+---
+title: "tarea4"
+format: dashboard
+editor: visual
+lang: es
+theme: flatly
+---
+
+```{r setup, include=FALSE}
+#| label: carga-librerias
+#| warning: false
+#| message: false
+
+library(tidyverse)
+library(DT)
+library(plotly)
+library(leaflet)
+library(sf)
+library(ggplot2)
+library(dplyr)
+library(janitor)
+
+```
+
+```{r setup, include=FALSE}
+#| label: carga-datos
+#| warning: false
+#| message: false
+
+registros <-
+  st_read("registros-reptiles.csv")
+regiones <- 
+  st_read("regiones-socioeconomicas.gpkg")
+especies <-
+  st_read("especies-reptiles.csv")
+    quiet = TRUE
+
+```
+
+# Tabla
+
+Debe ser una tabla interactiva generada con el paquete DT con una fila por categoría y dos columnas:
+
+-   Abreviatura de la categoría (EX, EW, CR, etc.).
+
+-   Cantidad de registros de presencia de especies de reptiles en la categoría.
+
+Los encabezados de la tabla deben estar en español y ser significativos.
+
+```{r}
+#| label: tabla-registros
+#| title: Tabla de cantidad de registros de presencia por categoría de Lista Roja
+#| warning: false
+#| message: false
+
+datos_unidos <- registros |>
+  inner_join(especies |> 
+               select(species, iucnRedListCategory), by = "species")
+
+resumen_categorias <- datos_unidos |>
+  group_by(iucnRedListCategory) |>
+  summarise(count = n()) |>
+  rename(Categoría = iucnRedListCategory, `Cantidad de Registros` = count)
+
+
+datatable(resumen_categorias, 
+          colnames = c("Categoría", "Cantidad de Registros"),
+          options = list(
+            pageLength = 7,
+            language = list(url = '//cdn.datatables.net/plug-ins/1.10.11/i18n/Spanish.json')
+          )
+)
+
+```
+
+# Gráfico 1
+
+Debe contener una barra por cada clase (columna `class`) mencionada y su longitud debe mostrar la cantidad de registros de presencia en esa clase. Las barras deben estar ordenadas por longitud (de mayor a menor o de menor a mayor).
+
+El gráfico deben programarse con ggplot2 y convertirse a plotly con la función `ggplotly()`. Debe tener:
+
+-   Título (puede asignarlo directamente en el gráfico o con la opción `#| title` del bloque de código).
+
+-   Etiquetas en los ejes x e y.
+
+```{r}
+#| label: grafico1
+#| title: Gráfico de barras de cantidad de registros de presencia de las clases Squamata (lagartos y serpientes), Testudines (tortugas) y Crocodylia (cocodrilos y caimanes)
+#| warning: false
+#| message: false
+
+resumen_clases <- datos_unidos |>
+  group_by(class) |>
+  summarise(count = n()) |>
+  arrange(desc(count))
+
+grafico_clases <- ggplot(resumen_clases, aes(x = reorder(class, -count), y = count)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Cantidad de Registros de Presencia por Clase",
+       x = "Clase",
+       y = "Cantidad de Registros") +
+  theme_minimal()
+grafico_interactivo <- ggplotly(grafico_clases)
+
+grafico_interactivo
+
+```
+
+# Mapa
+
+Debe ser un mapa leaflet interactivo con las siguientes capas y controles:
+
+-   Dos capas base de tipo *tiles* (teselas) (ej. OSM, Carto, ESRI).
+
+-   Una capa de regiones socioeconómicas (polígonos) coloreada de acuerdo con la riqueza de especies (i.e. cantidad de especies) de *Iguanidae* en cada región socioeconómica (i.e. un [mapa de coropletas](https://es.wikipedia.org/wiki/Mapa_coropl%C3%A9tico)). Al hacer clic sobre un polígono, la ventana emergente debe mostrar el nombre de la región y la cantidad de especies.
+
+-   Una leyenda que muestre el significado de los colores usados en la capa de regiones socioeconómicas.
+
+-   Un control de capas.
+
+```{r}
+#| label: mapa-riqueza
+#| title: Mapa de riqueza de especies de la familia Iguanidae (iguanas y garrobos) en regiones socioeconómicas
+#| warning: false
+#| message: false
+
+
+# Filtrar datos para la familia Iguanidae
+iguanidae <- registros %>%
+  filter(family == "Iguanidae")
+
+# Transformar el CRS del objeto regiones a WGS84 (EPSG:4326)
+regiones <- st_transform(regiones, 4326)
+
+# Asegurarse de que iguanidae tiene geometría espacial
+iguanidae_sf <- st_as_sf(iguanidae, coords = c("decimalLongitude", "decimalLatitude"), crs = 4326)
+
+# Unión espacial de iguanidae y regiones socioeconómicas
+iguanidae_union_regsocio <- st_join(iguanidae_sf, regiones, join = st_within)
+
+# Conteo de la cantidad de especies de Iguanidae en regiones socioeconómicas
+riqueza_especies_iguanidae_regsocio <- iguanidae_union_regsocio %>%
+  st_drop_geometry() %>%
+  group_by(region) %>%
+  summarize(riqueza = n_distinct(species, na.rm = TRUE))
+
+
+# Crear paleta de colores para la riqueza de especies
+colores_riqueza_especies <- colorNumeric(
+  palette = "Reds",
+  domain = riqueza_especies_iguanidae_regsocio$riqueza,
+  na.color = "transparent"
+)
+
+# Crear paleta de colores para las familias
+colores_especies <- colorFactor(
+  palette = viridis::viridis(length(unique(registros$family))),
+  domain = registros$family
+)
+
+# Mapa Leaflet
+leaflet() %>%
+  setView(lng = -84.19452, lat = 9.572735, zoom = 7) %>%
+  addTiles(group = "Mapa general (OpenStreetMap)") %>%
+  addProviderTiles(providers$Esri.WorldImagery, group = "Imágenes satelitales (ESRI World Imagery)") %>%
+  addPolygons(
+    data = regiones,
+    fillColor = ~colores_riqueza_especies(riqueza_especies_iguanidae_regsocio$riqueza[match(region, riqueza_especies_iguanidae_regsocio$region)]),
+    fillOpacity = 0.8,
+    color = "black",
+    stroke = TRUE,
+    weight = 1.0,
+    popup = ~paste("<strong>Región:</strong>", region, "<br/><strong>Riqueza de especies:</strong>", riqueza_especies_iguanidae_regsocio),
+    group = "Riqueza de especies iguanidae"
+  ) %>%
+  addScaleBar(position = "bottomleft", options = scaleBarOptions(imperial = FALSE)) %>%
+  addLegend(
+    position = "bottomleft",
+    pal = colores_riqueza_especies,
+    values = riqueza_especies_iguanidae_regsocio$riqueza,
+    group = "Riqueza de especies",
+    title = "Riqueza de especies"
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = colores_especies,
+    values = registros$family,
+    title = "Especies",
+    group = "Registros de presencia"
+  ) %>%
+  addLayersControl(
+    baseGroups = c("Mapa general (OpenStreetMap)", "Imágenes satelitales (ESRI World Imagery)"),
+    overlayGroups = c("Riqueza de especies iguanidae", "Registros de presencia")
+  ) %>%
+  hideGroup("Registros de presencia")
+
+
+
+
+```
+
+Trabajo realizado por:
+
+Jordan Monge C04958
+
+Jeriel Castrillo C31829
